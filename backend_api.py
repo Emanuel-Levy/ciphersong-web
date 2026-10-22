@@ -510,10 +510,16 @@ def _resolve_google_redirect_uri(request: Request) -> str:
         return configured
     # Fallback dinâmico considerando reverse proxies (Cloudflare Tunnel, Fly.io, Render)
     host = request.headers.get("x-forwarded-host") or request.headers.get("host") or request.url.netloc
+    if "," in host:
+        host = host.split(",")[0].strip()
     proto = request.headers.get("x-forwarded-proto") or request.url.scheme
+    if proto and "," in proto:
+        proto = proto.split(",")[0].strip()
     if not proto or proto not in ("http", "https"):
         proto = "https" if "localhost" not in host and "127.0.0.1" not in host else "http"
-    return f"{proto}://{host}/api/auth/google/callback"
+    redirect_uri = f"{proto}://{host}/api/auth/google/callback"
+    logger.info("Redirect URI inferido automaticamente: %s", redirect_uri)
+    return redirect_uri
 
 
 @app.get("/api/auth/google/login")

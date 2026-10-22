@@ -1039,31 +1039,44 @@ class AuthView:
         Redireciona o navegador diretamente para o endpoint FastAPI /api/auth/google/login,
         sem abrir servidor local temporário (loopback).
         """
+        import urllib.parse
         self.google_account_overlay.visible = False
         self.auth_feedback_text.value = "Redirecionando para login seguro com o Google..."
         self.auth_feedback_text.color = C_ACCENT
         self.page.update()
 
-        login_url = "/api/auth/google/login"
-        try:
-            if hasattr(self.page, "launch_url"):
-                self.page.launch_url(login_url, web_window_name="_self")
-                return
-        except TypeError:
+        target_path = "/api/auth/google/login"
+        base_page_url = getattr(self.page, "url", None)
+        if base_page_url and str(base_page_url).startswith("http"):
+            full_url = urllib.parse.urljoin(str(base_page_url), target_path)
+        else:
+            full_url = target_path
+
+        # 1. Tenta via page.launch_url se suportado nativamente
+        if hasattr(self.page, "launch_url"):
             try:
-                self.page.launch_url(login_url)
+                self.page.launch_url(full_url, web_window_name="_self")
                 return
+            except TypeError:
+                try:
+                    self.page.launch_url(full_url)
+                    return
+                except Exception as exc:
+                    logger.debug("Falha em page.launch_url: %s", exc)
             except Exception as exc:
                 logger.debug("Falha em page.launch_url: %s", exc)
-        except Exception as exc:
-            logger.debug("Falha em page.launch_url: %s", exc)
 
+        # 2. Executa via page.run_task para aguardar a corrotina assíncrona do UrlLauncher
         if self.url_launcher:
             try:
-                self.url_launcher.launch_url(login_url, web_only_window_name="_self")
+                self.page.run_task(
+                    self.url_launcher.launch_url,
+                    full_url,
+                    web_only_window_name="_self",
+                )
                 return
             except Exception as exc:
-                logger.debug("Falha em url_launcher.launch_url: %s", exc)
+                logger.error("Falha ao disparar Google OAuth no UrlLauncher: %s", exc)
 
     def login_google_click(self, e: ft.ControlEvent | None = None) -> None:
         """Alias para o disparo do fluxo Web do Google OAuth."""
