@@ -1152,50 +1152,49 @@ def marcar_ping_lido(ping_id: str, authorization: Optional[str] = Header(default
 # =============================================================================
 # MONTAGEM FLET WEB (PWA) VIA FLET.FASTAPI E ARQUIVOS ESTÁTICOS
 # =============================================================================
-# Todas as rotas REST /api/* e WebSockets /api/ws/* foram rigorosamente declaradas
-# antes da montagem na raiz ("/"), garantindo que o roteador SPA do Flet não capture
-# nem interfira nas requisições da API.
+# Compatibilidade Flet Web 1.0.4 + FastAPI >= 0.115 (elimina conflito de openapi_prefix)
+_orig_fastapi_init = FastAPI.__init__
+def _compat_fastapi_init(self, *args: Any, **kwargs: Any) -> None:
+    kwargs.pop("openapi_prefix", None)
+    return _orig_fastapi_init(self, *args, **kwargs)
+FastAPI.__init__ = _compat_fastapi_init
 
 # Exposição explícita de ícones e assets estáticos para evitar ERR_CONNECTION_REFUSED
-icons_dir = os.path.join(os.path.dirname(__file__), "assets", "icons")
+base_dir = os.path.dirname(os.path.abspath(__file__))
+icons_dir = os.path.join(base_dir, "assets", "icons")
 if os.path.exists(icons_dir):
     app.mount("/icons", StaticFiles(directory=icons_dir), name="icons")
 
-assets_dir = os.path.join(os.path.dirname(__file__), "assets")
+assets_dir = os.path.join(base_dir, "assets")
 if os.path.exists(assets_dir):
     app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
 
 try:
-    try:
-        import flet.fastapi as flet_fastapi
-    except ImportError:
-        import flet_fastapi  # Fallback defensivo para flet-fastapi standalone
+    import flet.fastapi as flet_fastapi
 
     from ciphersong.ui.app_flet import build_ciphersong_app
 
-    # Suporte tanto a session_handler (versões anteriores) quanto a main (Flet 1.0+)
-    try:
-        flet_web_app = flet_fastapi.app(
-            session_handler=build_ciphersong_app,
-            assets_dir="assets",
-            app_name="CipherSong",
-            app_short_name="CipherSong",
-            app_description="Repertório & Equipes Musicais",
-        )
-    except TypeError:
-        flet_web_app = flet_fastapi.app(
-            main=build_ciphersong_app,
-            assets_dir="assets",
-            app_name="CipherSong",
-            app_short_name="CipherSong",
-            app_description="Repertório & Equipes Musicais",
-        )
+    # Compatibilidade com Flet 1.0+ para suportar session_handler=
+    _orig_flet_app = flet_fastapi.app
+    def _compat_flet_app(*args: Any, **kwargs: Any) -> Any:
+        if "session_handler" in kwargs and "main" not in kwargs:
+            kwargs["main"] = kwargs.pop("session_handler")
+        return _orig_flet_app(*args, **kwargs)
+    flet_fastapi.app = _compat_flet_app
+
+    # Monta a aplicação Flet Web exatamente na raiz ("/")
+    flet_web_app = flet_fastapi.app(
+        session_handler=build_ciphersong_app,
+        assets_dir="assets",
+    )
 
     # A montagem na raiz "/" é estritamente a última rota registrada no FastAPI
     app.mount("/", flet_web_app)
     logger.info("CipherSong Flet Web montado com sucesso na rota raiz '/'.")
 except Exception as _flet_mount_err:
-    logger.warning("Não foi possível montar Flet Web no FastAPI: %s", _flet_mount_err)
+    logger.error("Falha ao montar Flet Web no FastAPI: %s", _flet_mount_err, exc_info=True)
+    raise _flet_mount_err
+
 
 
 if __name__ == "__main__":
