@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+
+<head>
+  <base href="/">
+
+  <meta charset="UTF-8">
+  <meta content="IE=Edge" http-equiv="X-UA-Compatible">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="description" content="CipherSong — Gestão inteligente de repertório musical, cifras e comunicação de equipes em tempo real.">
+
+  <!-- iOS PWA Meta Tags & Icons (Safari Standalone Mode) -->
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="CipherSong">
+  <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+  <link rel="apple-touch-icon" sizes="180x180" href="/icons/apple-touch-icon.png">
+  <link rel="apple-touch-icon" sizes="192x192" href="/icons/icon-192.png">
+  <link rel="apple-touch-icon" sizes="512x512" href="/icons/icon-512.png">
+
+  <!-- Favicon & PWA Theme -->
+  <link rel="icon" type="image/png" href="/icons/icon-192.png" />
+  <meta name="theme-color" content="#09090B">
+  <meta name="msapplication-navbutton-color" content="#09090B">
+  <meta name="apple-mobile-web-app-status-bar-style" content="#09090B">
+
+  <title>CipherSong — Repertório & Equipes</title>
+  <link rel="manifest" href="manifest.json">
+
+  <script>
+    // Safari / WebKit Back-Forward Cache Restoration Fix
+    window.addEventListener('pageshow', (event) => {
+      if (event.persisted && navigator.vendor && navigator.vendor.startsWith('Apple')) {
+        window.location.reload();
+      }
+    });
+  </script>
+
+  <script>
+    var flet = {
+      pyodide: false,
+      multiView: false,
+      noCdn: false,
+      webSocketEndpoint: "/ws",
+      entrypointBaseUrl: "/",
+      assetBase: "/",
+      routeUrlStrategy: "path",
+      canvasKitBaseUrl: null,
+      pyodideUrl: "/pyodide/pyodide.mjs",
+      webRenderer: "auto",
+      fontFallbackBaseUrl: null,
+      appPackageUrl: "app.tar.gz"
+    }
+
+    flet.flutterAppLoaded = new Promise((resolve) => {
+      flet.flutterAppResolve = resolve;
+    });
+
+    flet.flutterAppLoaded.then((flutterApp) => {
+      console.log("CipherSong Flutter Web Engine Loaded");
+    });
+  </script>
+
+  <!-- fletAppConfig -->
+
+  <script src="python.js"></script>
+</head>
+
+<body style="margin: 0; padding: 0; background-color: #09090B; overflow: hidden;">
+  <div id="loading" role="status" aria-label="Carregando CipherSong">
+    <style>
+      #loading {
+        position: fixed;
+        inset: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        background: #09090B;
+        color: #F4F4F5;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      }
+
+      .spinner {
+        width: 48px;
+        height: 48px;
+        border: 4px solid #27272A;
+        border-top-color: #A855F7;
+        border-radius: 50%;
+        animation: spin 0.8s linear infinite;
+        margin-bottom: 16px;
+      }
+
+      @keyframes spin {
+        to { transform: rotate(360deg); }
+      }
+    </style>
+    <div class="spinner"></div>
+    <div style="font-size: 14px; font-weight: 500; letter-spacing: 0.5px;">CipherSong</div>
+  </div>
+  <script src="flutter_bootstrap.js" async></script>
+</body>
+</html>
