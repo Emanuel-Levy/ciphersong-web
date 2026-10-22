@@ -19,7 +19,10 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
-import numpy as np
+try:
+    import numpy as np
+except ImportError:
+    np = None
 
 from ciphersong.core.key_estimator import KeyEstimation, MusicalKeyEstimator
 from ciphersong.core.pitch_detector import VocalPitchDetector, VoiceFrameResult
@@ -56,7 +59,7 @@ class LiveMicrophoneService:
         self._is_running = False
         self._stream: Optional[Any] = None
         self._flet_recorder: Optional[Any] = None
-        self._pcm_ring_buffer = np.zeros(0, dtype=np.float32)
+        self._pcm_ring_buffer = np.zeros(0, dtype=np.float32) if np is not None else None
         self._sim_thread: Optional[threading.Thread] = None
         self.last_frame: Optional[VoiceFrameResult] = None
         self.last_key: Optional[KeyEstimation] = None
@@ -106,7 +109,7 @@ class LiveMicrophoneService:
         self.key_estimator.reset()
         if hasattr(self.pitch_detector, "reset_state"):
             self.pitch_detector.reset_state()
-        self._pcm_ring_buffer = np.zeros(0, dtype=np.float32)
+        self._pcm_ring_buffer = np.zeros(0, dtype=np.float32) if np is not None else None
         self.last_frame = None
         self.last_key = None
 
@@ -130,7 +133,7 @@ class LiveMicrophoneService:
         Recebe bytes brutos `PCM16BITS` vindos do `flet_audio_recorder` no Android/iOS,
         converte para float32 (-1.0 a 1.0) em memória RAM e analisa blocos de `block_size`.
         """
-        if not raw_bytes:
+        if np is None or not raw_bytes:
             return None
 
         if self.sample_rate != sample_rate:
