@@ -19,9 +19,14 @@ from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
+import secrets
+import urllib.parse
+
+import httpx
 from bson import ObjectId
-from fastapi import FastAPI, Header, HTTPException, Query, WebSocket, WebSocketDisconnect, status
+from fastapi import FastAPI, Header, HTTPException, Query, Request, WebSocket, WebSocketDisconnect, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -490,6 +495,140 @@ def login_google(payload: UserGoogleAuthPayload) -> dict[str, Any]:
             "provedor": "google",
         },
     }
+
+
+DEFAULT_GOOGLE_CLIENT_ID = "565867015725-o8orc4t64gie24qqvgqo5df9faramcvi.apps.googleusercontent.com"
+GOOGLE_CLIENT_ID = (os.getenv("GOOGLE_CLIENT_ID") or DEFAULT_GOOGLE_CLIENT_ID).strip()
+GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "").strip()
+GOOGLE_REDIRECT_URL = os.getenv("GOOGLE_REDIRECT_URL", "").strip()
+
+
+def _resolve_google_redirect_uri(request: Request) -> str:
+    """Resolve a URL de callback OAuth do Google priorizando GOOGLE_REDIRECT_URL."""
+    configured = (os.getenv("GOOGLE_REDIRECT_URL") or GOOGLE_REDIRECT_URL).strip()
+    if configured:
+        return configured
+    base = str(request.base_url).rstrip("/")
+    forwarded_proto = request.headers.get("x-forwarded-proto")
+    if forwarded_proto and base.startswith("http://"):
+        base = base.replace("http://", f"{forwarded_proto}://", 1)
+    return f"{base}/api/auth/google/callback"
+
+
+@app.get("/api/auth/google/login")
+def google_oauth_login(request: Request) -> RedirectResponse:
+    """Redireciona o usuário para a URL de autorização oficial do Google."""
+    redirect_uri = _resolve_google_redirect_uri(request)
+    state = secrets.token_urlsafe(16)
+    client_id = (os.getenv("GOOGLE_CLIENT_ID") or GOOGLE_CLIENT_ID).strip()
+
+    params = {
+        "response_type": "code",
+        "client_id": client_id,
+        "redirect_uri": redirect_uri,
+        "scope": "openid email profile",
+        "state": state,
+        "prompt": "select_account",
+        "access_type": "online",
+    }
+    auth_url = f"https://accounts.google.com/o/oauth2/v2/auth?{urllib.parse.urlencode(params)}"
+    logger.info("Iniciando OAuth Google. Redirect URI: %s", redirect_uri)
+    return RedirectResponse(url=auth_url, status_code=status.HTTP_302_FOUND)
+
+
+@app.get("/api/auth/google/callback")
+def google_oauth_callback(
+    request: Request,
+    code: Optional[str] = Query(default=None),
+    error: Optional[str] = Query(default=None),
+    state: Optional[str] = Query(default=None),
+) -> RedirectResponse:
+    """Recebe o code do Google, troca pelo token, recupera perfil, emite JWT e redireciona para a raiz /."""
+    if error or not code:
+        err_msg = error or "Operação de login com o Google cancelada"
+        logger.warning("Callback Google cancelado ou com erro: %s", err_msg)
+        return RedirectResponse(url=f"/?auth_error={urllib.parse.quote(err_msg)}", status_code=status.HTTP_302_FOUND)
+
+    client_id = (os.getenv("GOOGLE_CLIENT_ID") or GOOGLE_CLIENT_ID).strip()
+    client_secret = (os.getenv("GOOGLE_CLIENT_SECRET") or GOOGLE_CLIENT_SECRET).strip()
+    redirect_uri = _resolve_google_redirect_uri(request)
+
+    # 1. Troca o código de autorização pelo token de acesso na API do Google
+    try:
+        with httpx.Client(timeout=12.0) as http_client:
+            token_payload = {
+                "code": code,
+                "client_id": client_id,
+                "redirect_uri": redirect_uri,
+                "grant_type": "authorization_code",
+            }
+            if client_secret:
+                token_payload["client_secret"] = client_secret
+
+            token_resp = http_client.post(
+                "https://oauth2.googleapis.com/token",
+                data=token_payload,
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+            )
+            token_resp.raise_for_status()
+            token_data = token_resp.json()
+            access_token = token_data.get("access_token")
+
+            # 2. Busca os dados de perfil do usuário (e-mail, nome)
+            user_resp = http_client.get(
+                "https://www.googleapis.com/oauth2/v3/userinfo",
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+            user_resp.raise_for_status()
+            user_info = user_resp.json()
+    except Exception as exc:
+        logger.error("Falha ao validar token do Google no callback: %s", exc, exc_info=True)
+        return RedirectResponse(
+            url=f"/?auth_error={urllib.parse.quote('Falha na validação com os servidores do Google')}",
+            status_code=status.HTTP_302_FOUND,
+        )
+
+    email = (user_info.get("email") or "").strip().lower()
+    if not email:
+        return RedirectResponse(
+            url=f"/?auth_error={urllib.parse.quote('O Google não retornou o e-mail da conta')}",
+            status_code=status.HTTP_302_FOUND,
+        )
+
+    name = (user_info.get("name") or user_info.get("given_name") or email.split("@")[0]).strip()
+    google_token_hash = hash_password(f"google-oauth2::{email}")
+    users_repo = get_users_repo()
+
+    try:
+        user_doc = users_repo.autenticar_ou_criar_google(
+            email=email,
+            nome=name,
+            google_token_hash=google_token_hash,
+        )
+    except Exception as exc:
+        logger.error("Falha ao salvar usuário autenticado no banco: %s", exc, exc_info=True)
+        return RedirectResponse(
+            url=f"/?auth_error={urllib.parse.quote('Erro ao salvar usuário no banco de dados')}",
+            status_code=status.HTTP_302_FOUND,
+        )
+
+    # 3. Emite o token JWT do CipherSong
+    token = create_access_token(
+        user_id=user_doc["_id"],
+        email=user_doc["email"],
+        name=user_doc.get("nome", name),
+    )
+
+    # 4. Redireciona de volta para a raiz (/) com os parâmetros de autenticação
+    redirect_params = urllib.parse.urlencode({
+        "token": token,
+        "user_id": str(user_doc["_id"]),
+        "email": user_doc["email"],
+        "name": user_doc.get("nome", name),
+    })
+    logger.info("Login Google bem-sucedido para %s. Redirecionando para /", email)
+    return RedirectResponse(url=f"/?{redirect_params}", status_code=status.HTTP_302_FOUND)
+
 
 
 # =============================================================================

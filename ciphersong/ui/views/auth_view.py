@@ -39,7 +39,7 @@ except ImportError:
     GoogleOAuthProvider = None  # type: ignore
 
 DEFAULT_GOOGLE_CLIENT_ID = "565867015725-o8orc4t64gie24qqvgqo5df9faramcvi.apps.googleusercontent.com"
-DEFAULT_GOOGLE_REDIRECT_URL = "http://localhost:8550/oauth_callback"
+DEFAULT_GOOGLE_REDIRECT_URL = os.getenv("GOOGLE_REDIRECT_URL", "/api/auth/google/callback").strip()
 
 GOOGLE_CLIENT_ID = (os.getenv("GOOGLE_CLIENT_ID") or DEFAULT_GOOGLE_CLIENT_ID).strip()
 GOOGLE_CLIENT_SECRET = (os.getenv("GOOGLE_CLIENT_SECRET") or "").strip()
@@ -1219,9 +1219,25 @@ class AuthView:
 
     async def start_official_google_oauth(self, e: ft.ControlEvent | None = None) -> None:
         self.google_account_overlay.visible = False
-        self.auth_feedback_text.value = "Abrindo seletor de Contas Google do aparelho..."
+        self.auth_feedback_text.value = "Redirecionando para login seguro com o Google..."
         self.auth_feedback_text.color = C_ACCENT
         self.page.update()
+
+        # No ambiente Web: redireciona via navegador diretamente para /api/auth/google/login sem servidor local
+        if getattr(self.page, "web", False):
+            try:
+                if hasattr(self.page, "launch_url"):
+                    self.page.launch_url("/api/auth/google/login")
+                    return
+            except Exception as _l_err:
+                logger.debug("Falha em page.launch_url: %s", _l_err)
+
+            if self.url_launcher:
+                try:
+                    await self.url_launcher.launch_url("/api/auth/google/login")
+                    return
+                except Exception as _ul_err:
+                    logger.debug("Falha em url_launcher.launch_url: %s", _ul_err)
 
         if self.page.web and GoogleOAuthProvider is not None and GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET:
             try:

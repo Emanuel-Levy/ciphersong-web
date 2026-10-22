@@ -171,7 +171,27 @@ def build_ciphersong_app(page: ft.Page) -> None:
         if auth_view_ctrl:
             auth_view_ctrl.header_greeting_text.value = f"Olá, {new_name}"
 
-    if not is_web:
+    if is_web:
+        import urllib.parse
+        current_route = getattr(page, "route", "") or ""
+        if "?" in current_route:
+            parsed_route = urllib.parse.urlparse(current_route)
+            route_params = urllib.parse.parse_qs(parsed_route.query)
+            q_token = route_params.get("token", [None])[0]
+            q_uid = route_params.get("user_id", [None])[0]
+            q_email = route_params.get("email", [None])[0]
+            q_name = route_params.get("name", [None])[0]
+            if q_token and q_email:
+                vault.save_auth_session(
+                    user_id=q_uid or "",
+                    email=q_email,
+                    token=q_token,
+                    name=q_name or q_email.split("@")[0],
+                )
+                api_client.set_auth_token(q_token)
+                u_key = q_uid or q_email
+                vault.switch_user(u_key)
+    else:
         auth_session = vault.get_auth_session()
         if auth_session and auth_session.get("token"):
             api_client.set_auth_token(auth_session["token"])
@@ -614,6 +634,27 @@ def build_ciphersong_app(page: ft.Page) -> None:
     # 7. Restauração e sincronização diferidas (pós-renderização / handshake completo)
     def _deferred_bootstrap():
         if is_web:
+            import urllib.parse
+            current_route = getattr(page, "route", "") or ""
+            if "?" in current_route:
+                parsed_route = urllib.parse.urlparse(current_route)
+                route_params = urllib.parse.parse_qs(parsed_route.query)
+                q_token = route_params.get("token", [None])[0]
+                q_uid = route_params.get("user_id", [None])[0]
+                q_email = route_params.get("email", [None])[0]
+                q_name = route_params.get("name", [None])[0]
+                q_err = route_params.get("auth_error", [None])[0]
+                if q_token and q_email:
+                    vault.save_auth_session(
+                        user_id=q_uid or "",
+                        email=q_email,
+                        token=q_token,
+                        name=q_name or q_email.split("@")[0],
+                    )
+                elif q_err and auth_view_ctrl:
+                    auth_view_ctrl.auth_feedback_text.value = f"Google: {q_err}"
+                    auth_view_ctrl.auth_feedback_text.color = C_DANGER
+
             auth_session = vault.get_auth_session()
             if auth_session and auth_session.get("token"):
                 api_client.set_auth_token(auth_session["token"])
