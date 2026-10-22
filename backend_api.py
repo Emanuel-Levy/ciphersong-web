@@ -508,11 +508,12 @@ def _resolve_google_redirect_uri(request: Request) -> str:
     configured = (os.getenv("GOOGLE_REDIRECT_URL") or GOOGLE_REDIRECT_URL).strip()
     if configured:
         return configured
-    base = str(request.base_url).rstrip("/")
-    forwarded_proto = request.headers.get("x-forwarded-proto")
-    if forwarded_proto and base.startswith("http://"):
-        base = base.replace("http://", f"{forwarded_proto}://", 1)
-    return f"{base}/api/auth/google/callback"
+    # Fallback dinâmico considerando reverse proxies (Cloudflare Tunnel, Fly.io, Render)
+    host = request.headers.get("x-forwarded-host") or request.headers.get("host") or request.url.netloc
+    proto = request.headers.get("x-forwarded-proto") or request.url.scheme
+    if not proto or proto not in ("http", "https"):
+        proto = "https" if "localhost" not in host and "127.0.0.1" not in host else "http"
+    return f"{proto}://{host}/api/auth/google/callback"
 
 
 @app.get("/api/auth/google/login")
@@ -619,7 +620,7 @@ def google_oauth_callback(
         name=user_doc.get("nome", name),
     )
 
-    # 4. Redireciona de volta para a raiz (/) com os parâmetros de autenticação
+    # 4. Redireciona de volta para a raiz (/) com os parâmetros de autenticação e cookie de sessão
     redirect_params = urllib.parse.urlencode({
         "token": token,
         "user_id": str(user_doc["_id"]),
@@ -627,7 +628,16 @@ def google_oauth_callback(
         "name": user_doc.get("nome", name),
     })
     logger.info("Login Google bem-sucedido para %s. Redirecionando para /", email)
-    return RedirectResponse(url=f"/?{redirect_params}", status_code=status.HTTP_302_FOUND)
+    response = RedirectResponse(url=f"/?{redirect_params}", status_code=status.HTTP_302_FOUND)
+    response.set_cookie(
+        key="ciphersong_jwt",
+        value=token,
+        max_age=86400 * 30,
+        httponly=True,
+        samesite="lax",
+        secure=True,
+    )
+    return response
 
 
 

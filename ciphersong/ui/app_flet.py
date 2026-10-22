@@ -66,6 +66,12 @@ def build_ciphersong_app(page: ft.Page) -> None:
     except Exception as svc_err:
         logger.warning("Services Init Warning: %s", svc_err)
 
+    if not hasattr(page, "launch_url"):
+        def _page_launch_url(url: str, web_window_name: str | None = None, **kwargs):
+            if app_url_launcher:
+                return app_url_launcher.launch_url(url, web_only_window_name=web_window_name or "_self")
+        page.launch_url = _page_launch_url
+
     # Gerenciador de Notificações In-App e SO
     notification_manager = InAppNotificationManager(page=page, haptic=haptic)
     page.overlay.append(notification_manager.overlay)
@@ -171,36 +177,65 @@ def build_ciphersong_app(page: ft.Page) -> None:
         if auth_view_ctrl:
             auth_view_ctrl.header_greeting_text.value = f"Olá, {new_name}"
 
-    if is_web:
+    def _process_url_tokens() -> bool:
         import urllib.parse
+        q_token = None
+        q_uid = None
+        q_email = None
+        q_name = None
+
+        if hasattr(page, "query") and page.query:
+            try:
+                q_token = page.query.get("token")
+                q_uid = page.query.get("user_id")
+                q_email = page.query.get("email")
+                q_name = page.query.get("name")
+            except Exception:
+                pass
+
         current_route = getattr(page, "route", "") or ""
-        if "?" in current_route:
-            parsed_route = urllib.parse.urlparse(current_route)
-            route_params = urllib.parse.parse_qs(parsed_route.query)
-            q_token = route_params.get("token", [None])[0]
-            q_uid = route_params.get("user_id", [None])[0]
-            q_email = route_params.get("email", [None])[0]
-            q_name = route_params.get("name", [None])[0]
-            if q_token and q_email:
-                vault.save_auth_session(
-                    user_id=q_uid or "",
-                    email=q_email,
-                    token=q_token,
-                    name=q_name or q_email.split("@")[0],
-                )
-                api_client.set_auth_token(q_token)
-                u_key = q_uid or q_email
-                vault.switch_user(u_key)
-    else:
-        auth_session = vault.get_auth_session()
-        if auth_session and auth_session.get("token"):
-            api_client.set_auth_token(auth_session["token"])
-            u_key = auth_session.get("user_id") or auth_session.get("email")
+        if (not q_token) and current_route and "?" in current_route:
+            try:
+                parsed_route = urllib.parse.urlparse(current_route)
+                route_params = urllib.parse.parse_qs(parsed_route.query)
+                q_token = route_params.get("token", [None])[0]
+                q_uid = route_params.get("user_id", [None])[0]
+                q_email = route_params.get("email", [None])[0]
+                q_name = route_params.get("name", [None])[0]
+            except Exception:
+                pass
+
+        if q_token and (q_email or q_uid):
+            vault.save_auth_session(
+                user_id=q_uid or "",
+                email=q_email or "",
+                token=q_token,
+                name=q_name or (q_email.split("@")[0] if q_email else "Cantor"),
+            )
+            api_client.set_auth_token(q_token)
+            u_key = q_uid or q_email
             if u_key:
                 vault.switch_user(u_key)
-        saved_active_team = vault.get_active_team()
-        if saved_active_team and (saved_active_team.get("_id") or saved_active_team.get("id")):
-            api_client.set_active_equipe_id(str(saved_active_team.get("_id") or saved_active_team.get("id")))
+            try:
+                page.route = "/"
+            except Exception:
+                pass
+            return True
+        return False
+
+    _process_url_tokens()
+
+    # Sempre restaura sessão válida persistida (Storage Web / preferences)
+    auth_session = vault.get_auth_session()
+    if auth_session and auth_session.get("token"):
+        api_client.set_auth_token(auth_session["token"])
+        u_key = auth_session.get("user_id") or auth_session.get("email")
+        if u_key:
+            vault.switch_user(u_key)
+
+    saved_active_team = vault.get_active_team()
+    if saved_active_team and (saved_active_team.get("_id") or saved_active_team.get("id")):
+        api_client.set_active_equipe_id(str(saved_active_team.get("_id") or saved_active_team.get("id")))
 
     is_authenticated_initial = bool(api_client.auth_token)
 
@@ -249,6 +284,15 @@ def build_ciphersong_app(page: ft.Page) -> None:
         on_username_changed=_on_username_changed,
         is_authenticated_initial=is_authenticated_initial,
     )
+
+    def _on_route_change(e: ft.RouteChangeEvent) -> None:
+        if _process_url_tokens():
+            sess = vault.get_auth_session()
+            user_name = (sess.get("name") if sess else None) or "Cantor"
+            token = (sess.get("token") if sess else None) or ""
+            _on_auth_success(user_name, token)
+
+    page.on_route_change = _on_route_change
 
     # 2. Registro de Overlays Modais no Flet (Page Overlays)
     page.overlay.extend([

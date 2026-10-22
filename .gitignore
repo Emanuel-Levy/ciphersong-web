@@ -35,7 +35,9 @@ env/
 *.jks
 *.keystore
 
-# Testing & Coverage
+# Executables & Tunnels
+*.exe
+cloudflared*
 .pytest_cache/
 .coverage
 htmlcov/

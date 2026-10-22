@@ -33,10 +33,7 @@ from ciphersong.ui.theme import (
 
 logger = logging.getLogger("ciphersong.ui.auth")
 
-try:
-    from flet.auth.providers import GoogleOAuthProvider
-except ImportError:
-    GoogleOAuthProvider = None  # type: ignore
+# Google OAuth Web flow uses FastAPI backend redirect (/api/auth/google/login)
 
 DEFAULT_GOOGLE_CLIENT_ID = "565867015725-o8orc4t64gie24qqvgqo5df9faramcvi.apps.googleusercontent.com"
 DEFAULT_GOOGLE_REDIRECT_URL = os.getenv("GOOGLE_REDIRECT_URL", "/api/auth/google/callback").strip()
@@ -665,7 +662,6 @@ class AuthView:
             ),
         )
 
-        self.page.on_login = self.on_google_oauth_completed
 
     def get_logged_user_display_name(self) -> str | None:
         sess = self.vault.get_auth_session()
@@ -1037,273 +1033,41 @@ class AuthView:
 </body>
 </html>"""
 
-    def _start_loopback_google_oauth_server(self) -> str:
-        import http.server
-        import secrets
-        import urllib.parse
-
-        import httpx
-
-        parsed_redirect = urllib.parse.urlparse(GOOGLE_REDIRECT_URL)
-        listen_port = parsed_redirect.port or 8550
-        oauth_state = secrets.token_urlsafe(16)
-
-        auth_self = self
-
-        if self.active_oauth_http_server[0] is None:
-            class _ReusableHTTPServer(http.server.HTTPServer):
-                allow_reuse_address = True
-
-            class _GoogleOAuthCallbackHandler(http.server.BaseHTTPRequestHandler):
-                def log_message(self, format: str, *args: Any) -> None:
-                    pass
-
-                def do_GET(self) -> None:
-                    parsed_path = urllib.parse.urlparse(self.path)
-                    if not parsed_path.path.startswith("/oauth_callback"):
-                        self.send_response(204)
-                        self.end_headers()
-                        return
-
-                    qs = urllib.parse.parse_qs(parsed_path.query)
-                    err = qs.get("error", [None])[0]
-                    code = qs.get("code", [None])[0]
-
-                    if err or not code:
-                        html_err = auth_self._build_oauth_success_html(
-                            "Autenticação Cancelada",
-                            f"O Google retornou: {err or 'Operação cancelada'}. Volte ao CipherSong e tente novamente.",
-                            is_error=True,
-                        ).encode("utf-8")
-                        self.send_response(200)
-                        self.send_header("Content-Type", "text/html; charset=utf-8")
-                        self.send_header("Content-Length", str(len(html_err)))
-                        self.end_headers()
-                        self.wfile.write(html_err)
-                        auth_self.auth_feedback_text.value = f"Autenticação Google cancelada ({err or 'sem código'})."
-                        auth_self.auth_feedback_text.color = C_DANGER
-                        try:
-                            auth_self.page.update()
-                        except Exception:
-                            pass
-                        return
-
-                    try:
-                        with httpx.Client(timeout=12.0, follow_redirects=True) as client:
-                            token_resp = client.post(
-                                "https://oauth2.googleapis.com/token",
-                                data={
-                                    "code": code,
-                                    "client_id": GOOGLE_CLIENT_ID,
-                                    "client_secret": GOOGLE_CLIENT_SECRET,
-                                    "redirect_uri": GOOGLE_REDIRECT_URL,
-                                    "grant_type": "authorization_code",
-                                },
-                                headers={"Content-Type": "application/x-www-form-urlencoded"},
-                            )
-                            token_resp.raise_for_status()
-                            token_data = token_resp.json()
-                            access_token = token_data.get("access_token")
-
-                            user_resp = client.get(
-                                "https://www.googleapis.com/oauth2/v3/userinfo",
-                                headers={"Authorization": f"Bearer {access_token}"},
-                            )
-                            user_resp.raise_for_status()
-                            u_info = user_resp.json()
-
-                        g_email = str(u_info.get("email") or "").strip().lower()
-                        g_name = str(u_info.get("name") or (g_email.split("@")[0] if g_email else "")).strip()
-
-                        html_ok = auth_self._build_oauth_success_html(
-                            "Conta Google Confirmada!",
-                            f"Identificado como {g_name} ({g_email}). Volte para o aplicativo CipherSong para continuar.",
-                            is_error=False,
-                        ).encode("utf-8")
-                        self.send_response(200)
-                        self.send_header("Content-Type", "text/html; charset=utf-8")
-                        self.send_header("Content-Length", str(len(html_ok)))
-                        self.end_headers()
-                        self.wfile.write(html_ok)
-
-                        if g_email:
-                            auth_self.select_google_account(g_email, g_name)
-                            try:
-                                async def _try_close_custom_tab() -> None:
-                                    try:
-                                        if auth_self.url_launcher:
-                                            await auth_self.url_launcher.close_in_app_web_view()
-                                    except Exception:
-                                        pass
-                                auth_self.page.run_task(_try_close_custom_tab)
-                            except Exception:
-                                pass
-                    except Exception as ex:
-                        html_fail = auth_self._build_oauth_success_html(
-                            "Erro na Validação Google",
-                            f"Não foi possível validar o token com a API do Google: {ex}",
-                            is_error=True,
-                        ).encode("utf-8")
-                        self.send_response(200)
-                        self.send_header("Content-Type", "text/html; charset=utf-8")
-                        self.send_header("Content-Length", str(len(html_fail)))
-                        self.end_headers()
-                        self.wfile.write(html_fail)
-                        auth_self.auth_feedback_text.value = f"Erro ao validar token Google: {ex}"
-                        auth_self.auth_feedback_text.color = C_DANGER
-                        try:
-                            auth_self.page.update()
-                        except Exception:
-                            pass
-
-            srv = _ReusableHTTPServer(("127.0.0.1", listen_port), _GoogleOAuthCallbackHandler)
-            self.active_oauth_http_server[0] = srv
-
-            def _serve_oauth_loop() -> None:
-                try:
-                    srv.serve_forever()
-                except Exception:
-                    pass
-                finally:
-                    try:
-                        srv.server_close()
-                    except Exception:
-                        pass
-                    if auth_self.active_oauth_http_server[0] is srv:
-                        auth_self.active_oauth_http_server[0] = None
-
-            threading.Thread(target=_serve_oauth_loop, daemon=True).start()
-
-        params = urllib.parse.urlencode({
-            "response_type": "code",
-            "client_id": GOOGLE_CLIENT_ID,
-            "redirect_uri": GOOGLE_REDIRECT_URL,
-            "scope": "https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile openid",
-            "state": oauth_state,
-            "prompt": "select_account",
-            "access_type": "online",
-        })
-        return f"https://accounts.google.com/o/oauth2/v2/auth?{params}"
-
-    async def _open_google_url_on_device(self, authorization_url: str) -> None:
-        try:
-            if self.page.web:
-                if self.url_launcher:
-                    await self.url_launcher.open_window(
-                        authorization_url,
-                        title="flet_oauth_signin",
-                        width=520,
-                        height=650,
-                    )
-            else:
-                try:
-                    if self.url_launcher:
-                        await self.url_launcher.launch_url(
-                            authorization_url,
-                            mode=ft.LaunchMode.IN_APP_BROWSER_VIEW,
-                        )
-                except Exception:
-                    if self.url_launcher:
-                        await self.url_launcher.launch_url(
-                            authorization_url,
-                            mode=ft.LaunchMode.PLATFORM_DEFAULT,
-                        )
-        except Exception as ul_err:
-            logger.warning("UrlLauncher fallback: %s", ul_err)
-            try:
-                if self.url_launcher:
-                    await self.url_launcher.launch_url(authorization_url)
-            except Exception:
-                import webbrowser
-                webbrowser.open(authorization_url)
-
-    async def start_official_google_oauth(self, e: ft.ControlEvent | None = None) -> None:
+    def start_official_google_oauth(self, e: ft.ControlEvent | None = None) -> None:
+        """
+        Dispara o fluxo Web oficial de autenticação com o Google OAuth.
+        Redireciona o navegador diretamente para o endpoint FastAPI /api/auth/google/login,
+        sem abrir servidor local temporário (loopback).
+        """
         self.google_account_overlay.visible = False
         self.auth_feedback_text.value = "Redirecionando para login seguro com o Google..."
         self.auth_feedback_text.color = C_ACCENT
         self.page.update()
 
-        # No ambiente Web: redireciona via navegador diretamente para /api/auth/google/login sem servidor local
-        if getattr(self.page, "web", False):
-            try:
-                if hasattr(self.page, "launch_url"):
-                    self.page.launch_url("/api/auth/google/login")
-                    return
-            except Exception as _l_err:
-                logger.debug("Falha em page.launch_url: %s", _l_err)
-
-            if self.url_launcher:
-                try:
-                    await self.url_launcher.launch_url("/api/auth/google/login")
-                    return
-                except Exception as _ul_err:
-                    logger.debug("Falha em url_launcher.launch_url: %s", _ul_err)
-
-        if self.page.web and GoogleOAuthProvider is not None and GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET:
-            try:
-                google_provider = GoogleOAuthProvider(
-                    client_id=GOOGLE_CLIENT_ID,
-                    client_secret=GOOGLE_CLIENT_SECRET,
-                    redirect_url=GOOGLE_REDIRECT_URL,
-                )
-                google_provider.authorization_params = {
-                    "prompt": "select_account",
-                    "access_type": "online",
-                }
-                await self.page.login(
-                    google_provider,
-                    fetch_user=True,
-                    on_open_authorization_url=self._open_google_url_on_device,
-                    complete_page_html=self._build_oauth_success_html(
-                        "Conta Google Confirmada!",
-                        "Sua conta Google foi verificada com sucesso. Esta janela será fechada automaticamente.",
-                        is_error=False,
-                    ),
-                )
-                return
-            except Exception as web_oauth_exc:
-                logger.warning("Web OAuth Fallback to Loopback: %s", web_oauth_exc)
-
+        login_url = "/api/auth/google/login"
         try:
-            auth_url = self._start_loopback_google_oauth_server()
-            await self._open_google_url_on_device(auth_url)
-        except Exception as exc:
-            logger.warning("Google OAuth Loopback Error: %s", exc)
-            self.auth_feedback_text.value = f"Erro ao abrir seletor Google: {exc}"
-            self.auth_feedback_text.color = C_DANGER
-            self.page.update()
-
-    async def on_google_oauth_completed(self, e: ft.LoginEvent) -> None:
-        if e.error:
-            self.auth_feedback_text.value = f"Não foi possível autenticar com o Google: {e.error_description or e.error}"
-            self.auth_feedback_text.color = C_DANGER
-            self.page.update()
-            return
-
-        try:
-            user_info = getattr(self.page.auth, "user", None)
-            if not user_info:
-                self.auth_feedback_text.value = "Conta Google não confirmada pela API."
-                self.auth_feedback_text.color = C_DANGER
-                self.page.update()
+            if hasattr(self.page, "launch_url"):
+                self.page.launch_url(login_url, web_window_name="_self")
                 return
-
-            g_email = user_info.get("email") if isinstance(user_info, dict) else getattr(user_info, "email", None)
-            g_name = user_info.get("name") if isinstance(user_info, dict) else getattr(user_info, "name", None)
-            if not g_name and g_email:
-                g_name = str(g_email).split("@")[0]
-
-            if not g_email:
-                self.auth_feedback_text.value = "E-mail não retornado pela Conta Google."
-                self.auth_feedback_text.color = C_DANGER
-                self.page.update()
+        except TypeError:
+            try:
+                self.page.launch_url(login_url)
                 return
-
-            self.select_google_account(str(g_email), str(g_name))
+            except Exception as exc:
+                logger.debug("Falha em page.launch_url: %s", exc)
         except Exception as exc:
-            self.auth_feedback_text.value = f"Erro ao processar conta Google: {exc}"
-            self.auth_feedback_text.color = C_DANGER
-            self.page.update()
+            logger.debug("Falha em page.launch_url: %s", exc)
+
+        if self.url_launcher:
+            try:
+                self.url_launcher.launch_url(login_url, web_only_window_name="_self")
+                return
+            except Exception as exc:
+                logger.debug("Falha em url_launcher.launch_url: %s", exc)
+
+    def login_google_click(self, e: ft.ControlEvent | None = None) -> None:
+        """Alias para o disparo do fluxo Web do Google OAuth."""
+        self.start_official_google_oauth(e)
 
     def switch_auth_mode(self, mode: str) -> None:
         self.auth_mode = mode
